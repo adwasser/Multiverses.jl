@@ -4,35 +4,53 @@ using MacroTools: combinedef, postwalk, prewalk, @capture
 using Tables
 
 export Multiverse,
+    @enter, @explore, explore, explore!,
     choices, measurements, universes,
-    choice_table, measurement_table,
-    @enter, explore, explore!
+    choice_table, measurement_table
 
 """
     Multiverse(choices, measurements, universes, choice_values, measurement_values)
 
 A multiverse consists of different code evalutation "universes", where each universe has a set of choice values that are associated to a set of measurement values.
 """
-struct Multiverse{
-    T_choice<:NamedTuple,
-    T_measurement<:NamedTuple,
-    }
+struct Multiverse
     choices::Tuple
     measurements::Tuple
     universes::Vector{Function}
-    choice_values::Vector{T_choice}
-    measurement_values::Vector{Union{Nothing, T_measurement}}
+    choice_values::Vector{NamedTuple}
+    measurement_values::Vector{Union{Nothing, NamedTuple}}
+end
+
+function Multiverse(choices, measurements, universes, choice_values)
+    measurement_values = Vector{Union{Nothing, NamedTuple}}()
+    for i in 1:length(choice_values)
+        push!(measurement_values, nothing)
+    end
+    return Multiverse(
+        choices, measurements, universes, choice_values, measurement_values
+    )
 end
 
 choices(m::Multiverse) = m.choices
 measurements(m::Multiverse) = m.measurements
+universes(m::Multiverse) = m.universes
 choice_table(m::Multiverse) = m.choice_values
 measurement_table(m::Multiverse) = m.measurement_values
-universes(m::Multiverse) = m.universes
 
 Base.length(m::Multiverse) = length(universes(m))
 
 Base.show(io::IO, m::Multiverse) = print(io, "Multiverse(choices = $(m.choices), measurements = $(m.measurements))")
+
+function generate_choice_values(choices, choice_possibilities)
+    possibilities = [choice_possibilities[choice] for choice in choices]
+    choice_types = eltype.(possibilities)
+    T_choice = NamedTuple{choices, Tuple{choice_types...}}
+    choice_values = Vector{T_choice}()
+    for vals in Iterators.product(possibilities...)
+        push!(choice_values, NamedTuple{choices}(vals))
+    end
+    return choice_values
+end
 
 function fix_choices(universe::Expr, choice_vals::NamedTuple)
     return postwalk(universe) do ex
@@ -60,111 +78,136 @@ function track_measurements(universe::Expr, tracker)
     return universe
 end
 
-macro enter(block::Expr)
-    if !Meta.isexpr(block, :block)
-        return :(error("must enter into a block of code"))
-    end
-    
-    # extract and validate choices and measurements
-    choice_possibilities = Dict{Symbol, Vector}()
-    measurements = []
-    errors = []
-    walked_block = postwalk(block) do ex
-        if @capture(ex, @choose choice_ = p_)
-            possibilities = collect((__module__).eval(p))
-            if in(choice, keys(choice_possibilities))
-                push!(
-                    errors,
-                    :(error("choice $(choice) assigned more than once"))
-                )
-                return ex
-            end
-            if length(possibilities) <= 1
-                push!(
-                    errors,
-                    :(error("need more than possible choice"))
-                )
-                return ex
-            end
-            choice_possibilities[choice] = possibilities
-            # remove macrocall to avoid counting again
-            return :($(choice) = :(p))
-        elseif @capture(ex, @choose foo_)
-            push!(
-                errors,
-                :(error("need to assign possible choices, e.g., @choice x = [1, 2]"))
-            )
-            return ex
-        elseif @capture(ex, @measure measurement_ = foo_)
-            if in(measurement, measurements)
-                push!(
-                    errors,
-                    :(error("measurement $(measurement) assigned more than once"))
-                )
-                return ex
-            end
-            push!(measurements, measurement)
-            return :($(measurement) = $(foo))
-        elseif @capture(ex, @measure foo_)
-            push!(
-                errors,
-                :(error("need to assign a value to the measurement , e.g., @measure y = x + 2"))
-            )
-            return ex
-        end
-        return ex
-    end
-    if length(errors) > 0
-        return first(errors)
-    end
-    
-    choices = tuple(keys(choice_possibilities)...)
-    if length(choices) < 1
-        return :(error("need at least one choice"))
-    end
-    measurements = tuple(measurements...)
-    if length(measurements) < 1
-        return :(error("need at least one measurement"))
-    end
-    overlap = intersect(choices, measurements)
-    if length(overlap) > 0
-        return :(error("$(overlap) variables found in both choices and measurements"))
-    end
-    
-    # generate choice value sets
-    possibilities = [choice_possibilities[choice] for choice in choices]
-    choice_types = eltype.(possibilities)
-    T_choice = NamedTuple{choices, Tuple{choice_types...}}
-    choice_values = Vector{T_choice}()
-    for vals in Iterators.product(possibilities...)
-        push!(choice_values, NamedTuple{choices}(vals))
-    end
-
-    # generate universe functions
-    universes = []
+function generate_universes(block::Expr, choice_values)
+    universes = gensym()
+    expressions = Vector{Any}()
+    push!(expressions, Expr(:(=), universes, :([])))
     for vals in choice_values
         universe = deepcopy(block)
         universe = fix_choices(universe, vals)
-        tracker = (__module__).gensym()
+        tracker = gensym()
         universe = track_measurements(universe, tracker)
         def = combinedef(
             Dict(
-                :name => (__module__).gensym(),
+                :name => gensym(),
                 :body => universe,
                 :args => (),
                 :kwargs => (),
             )
         )
-        push!(universes, (__module__).eval(def))
+        push!(expressions, Expr(:call, :push!, universes, def))
+    end
+    push!(expressions, universes)
+    return Expr(:block, expressions...)
+end
+
+function validate_block(mod, block::Expr)
+    # extract and validate choices and measurements
+    choice_possibilities = Dict{Symbol, Vector}()
+    measurements = []
+    walked_block = postwalk(block) do ex
+        if @capture(ex, @choose choice_ = p_)
+            possibilities = collect(mod.eval(p))
+            if in(choice, keys(choice_possibilities))
+                error("choice $(choice) assigned more than once")
+            end
+            if length(possibilities) <= 1
+                error("need more than possible choice")
+            end
+            choice_possibilities[choice] = possibilities
+            # remove macrocall to avoid counting again
+            return :($(choice) = :(p))
+        elseif @capture(ex, @choose foo_)
+            error("need to assign possible choices, e.g., @choice x = [1, 2]")
+        elseif @capture(ex, @measure measurement_ = foo_)
+            if in(measurement, measurements)
+                error("measurement $(measurement) assigned more than once")
+            end
+            push!(measurements, measurement)
+            return :($(measurement) = $(foo))
+        elseif @capture(ex, @measure foo_)
+            error("need to assign a value to the measurement , e.g., @measure y = x + 2")
+        end
+        return ex
+    end
+    choices = collect(keys(choice_possibilities))
+    # some additional validation
+    if length(choices) < 1
+        error("need at least one choice")
+    end
+    measurements = tuple(measurements...)
+    if length(measurements) < 1
+        error("need at least one measurement")
+    end
+    overlap = intersect(choices, measurements)
+    if length(overlap) > 0
+        error("$(overlap) variables found in both choices and measurements")
+    end
+    return (choice_possibilities, measurements)
+end
+
+
+function enter(mod, block::Expr)
+    if !Meta.isexpr(block, :block)
+        error("must enter into a block of code")
     end
     
-    T_measurement = NamedTuple{measurements}
-    measurement_values = [nothing for i in 1:length(universes)]
-    m = Multiverse{T_choice, T_measurement}(
-        choices, measurements, universes,
-        choice_values, measurement_values
+    choice_possibilities, measurements = validate_block(mod, block)
+    choices = tuple(keys(choice_possibilities)...)
+    
+    choice_values = generate_choice_values(choices, choice_possibilities)
+    universes = generate_universes(block, choice_values)
+
+    sym = mod.gensym()
+    return Expr(
+        :block,
+        Expr(:(=), sym, universes),
+        Expr(
+            :call,
+            :Multiverse,
+            choices,
+            measurements,
+            sym,
+            choice_values,
+        )
     )
-    return m
+end
+
+"""
+    multiverse = @enter begin
+        @choose x = 1:5
+        y = 2 * x + 3
+        @measure z = sqrt(y)
+    end
+
+Prepare a multiverse analysis based on the provided block of code.
+
+Choices are denoted by the `@choose` macrocall and must assign a collection to
+a variable. Measurements are denoted by the `@measure` macrocall and must
+assign a value to a variable.
+
+The multiverse can have the measurements in each choice-set universe populated
+using the `explore!` method, either all at once or iteratively.
+"""
+macro enter(block::Expr)
+    return enter(__module__, block)
+end
+
+"""
+    multiverse = @explore begin
+        @choose x = 1:5
+        y = 2 * x + 3
+        @measure z = sqrt(y)
+    end
+
+Prepare and run a multiverse analysis.
+"""
+macro explore(block)
+    return Expr(
+        :call,
+        :explore!,
+        enter(__module__, block),
+    )
 end
 
 function explore(m::Multiverse, i)
