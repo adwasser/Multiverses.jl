@@ -190,7 +190,7 @@ The multiverse can have the measurements in each choice-set universe populated
 using the `explore!` method, either all at once or iteratively.
 """
 macro enter(block::Expr)
-    return enter(__module__, block)
+    return esc(enter(__module__, block))
 end
 
 """
@@ -206,7 +206,7 @@ macro explore(block)
     return Expr(
         :call,
         :explore!,
-        enter(__module__, block),
+        esc(enter(__module__, block))
     )
 end
 
