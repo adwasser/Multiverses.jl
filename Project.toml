@@ -1,8 +1,13 @@
 name = "Multiverses"
 uuid = "8c3f51a0-5c4f-440f-9c08-8c30078f3199"
-authors = ["asher "]
+authors = ["Asher Wasserman <asher.d.wasserman@gmail.com>"]
 version = "0.1.0"
 
 [deps]
 MacroTools = "1914dd2f-81c6-5fcd-8719-6d5c9610ff09"
 Tables = "bd369af6-aec1-5ad0-b16a-f7cc5008161c"
+
+[compat]
+MacroTools = "0.5"
+Tables = "1"
+julia = "1"
