@@ -11,19 +11,19 @@ end
 
 @testset "entering multiverse" begin
 
-    @assert isa(m, Multiverse)
-    @assert in(:x, choices(m))
-    @assert length(choices(m)) == 1
-    @assert in(:y, measurements(m))
-    @assert length(measurements(m)) == 1
-    @assert length(m) == 2
-    @assert in((x = 1,), choice_table(m))
-    @assert all(isnothing.(measurement_table(m)))
+    @test isa(m, Multiverse)
+    @test in(:x, choices(m))
+    @test length(choices(m)) == 1
+    @test in(:y, measurements(m))
+    @test length(measurements(m)) == 1
+    @test length(m) == 2
+    @test in((x = 1,), choice_table(m))
+    @test all(isnothing.(measurement_table(m)))
     
     explore!(m)
-    @assert !any(isnothing.(measurement_table(m)))
-    @assert in((y = 4,), measurement_table(m))
-    @assert in((x = 1, y = 4), Tables.rows(m))
+    @test !any(isnothing.(measurement_table(m)))
+    @test in((y = 4,), measurement_table(m))
+    @test in((x = 1, y = 4), Tables.rows(m))
 
 end
 
@@ -51,14 +51,14 @@ end
 explore!(m)
 
 @testset "nested choices" begin
-    @assert in(:a_threshold, choices(m))
-    @assert in(:b_threshold, choices(m))
-    @assert length(choices(m)) == 2
+    @test in(:a_threshold, choices(m))
+    @test in(:b_threshold, choices(m))
+    @test length(choices(m)) == 2
     for row in Tables.rows(m)
         if row.a_threshold == 0
-            @assert row.flag_zeros
+            @test row.flag_zeros
         else
-            @assert ismissing(row.flag_zeros)
+            @test ismissing(row.flag_zeros)
         end
     end
 end
